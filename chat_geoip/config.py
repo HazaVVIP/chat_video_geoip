@@ -64,6 +64,20 @@ ASN_DB_CANDIDATES = (
     "~/GeoIP/GeoLite2-ASN.mmdb",
 )
 
+# tshark -T fields names (must exist in Wireshark dissectors or tshark exits immediately)
+TSHARK_LIVE_FIELDS_SIMPLE = ("ip.src", "ip.dst")
+TSHARK_LIVE_FIELDS_APT = (
+    "ip.src",
+    "ip.dst",
+    "udp.srcport",
+    "udp.dstport",
+    "stun.type",
+    "classicstun.att.ipv4-xord",
+    "classicstun.att.port-xord",
+    "rtp.ssrc",
+    "tls.handshake.extensions_server_name",
+)
+
 VIRTUAL_IFACE_PATTERNS = (
     "loopback",
     "usbpcap",

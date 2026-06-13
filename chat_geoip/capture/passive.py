@@ -20,6 +20,8 @@ from chat_geoip.config import (
     PcapInfo,
     PeerCandidate,
     RunConfig,
+    TSHARK_LIVE_FIELDS_APT,
+    TSHARK_LIVE_FIELDS_SIMPLE,
     effective_bpf,
     effective_filter,
 )
@@ -29,17 +31,13 @@ from chat_geoip.parse.ice import merge_candidates, parse_passive_line
 from chat_geoip.ui.dashboard import render_apt_dashboard, render_live_screen, render_summary
 from chat_geoip.utils import ENDPOINTS_LINE, find_tshark, is_public_ip, run_tshark
 
-TSHARK_LIVE_FIELDS = [
-    "ip.src",
-    "ip.dst",
-    "udp.srcport",
-    "udp.dstport",
-    "stun.type",
-    "stun.xor-mapped-address.ip",
-    "stun.xor-mapped-address.port",
-    "rtp.ssrc",
-    "tls.handshake.extensions_server_name",
-]
+def live_field_set(cfg: RunConfig) -> tuple[str, ...]:
+    """Simple ip.src/ip.dst for stable live-all; APT fields for OmeTV/Omegle scoring."""
+    if cfg.filter_preset == "all" and not cfg.display_filter and not cfg.platform:
+        return TSHARK_LIVE_FIELDS_SIMPLE
+    if cfg.filter_preset in ("omegle-ometv",) or cfg.platform:
+        return TSHARK_LIVE_FIELDS_APT
+    return TSHARK_LIVE_FIELDS_SIMPLE
 
 
 def list_interfaces(tshark: str, include_virtual: bool = False) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -174,7 +172,7 @@ def extract_ice_fields(tshark: str, cfg: RunConfig, filt: str) -> dict[str, IceC
     cmd = _tshark_base(tshark, cfg) + [
         "-T", "fields", "-E", "separator=\t", "-E", "occurrence=f",
     ]
-    for field in TSHARK_LIVE_FIELDS:
+    for field in live_field_set(cfg):
         cmd += ["-e", field]
     if filt:
         cmd += ["-Y", filt]
@@ -186,7 +184,7 @@ def extract_ice_fields(tshark: str, cfg: RunConfig, filt: str) -> dict[str, IceC
 
     for line in proc.stdout.splitlines():
         tokens = line.split("\t")
-        new_cands = parse_passive_line(tokens, cfg.include_private)
+        new_cands = parse_passive_line(tokens, cfg.include_private, field_names=live_field_set(cfg))
         merge_candidates(ice_map, new_cands)
 
     if not cfg.include_private:
@@ -270,7 +268,7 @@ def _find_dumpcap(tshark: str) -> Optional[str]:
 def build_live_tshark_cmd(tshark: str, cfg: RunConfig, filt: str, write_pcap: bool = False) -> list[str]:
     cmd = [tshark, "-n", "-i", cfg.interface or "", "-l", "-T", "fields",
            "-E", "separator=\t", "-E", "occurrence=f"]
-    for field in TSHARK_LIVE_FIELDS:
+    for field in live_field_set(cfg):
         cmd += ["-e", field]
 
     bpf = effective_bpf(cfg)
@@ -296,6 +294,27 @@ def build_dumpcap_cmd(tshark: str, cfg: RunConfig) -> list[str]:
     return cmd
 
 
+def ingest_ip_line(
+    line: str,
+    hits: dict[str, int],
+    cfg: RunConfig,
+    new_ips: set[str],
+) -> int:
+    """Stable live ingest — any public ip.src/ip.dst (original v0 behavior)."""
+    counted = 0
+    for token in line.split("\t"):
+        token = token.strip()
+        if not token or token == "<no value>":
+            continue
+        if not cfg.include_private and not is_public_ip(token):
+            continue
+        if token not in hits:
+            new_ips.add(token)
+        hits[token] += 1
+        counted += 1
+    return counted
+
+
 def ingest_line(
     line: str,
     ice_map: dict[str, IceCandidate],
@@ -304,7 +323,7 @@ def ingest_line(
     new_ips: set[str],
 ) -> int:
     tokens = line.split("\t")
-    new_list = parse_passive_line(tokens, cfg.include_private)
+    new_list = parse_passive_line(tokens, cfg.include_private, field_names=live_field_set(cfg))
     added = merge_candidates(ice_map, new_list)
     counted = 0
     for ip in added:
@@ -317,6 +336,15 @@ def ingest_line(
             if ip.ip not in added:
                 counted += 1
     return counted
+
+
+def _drain_stderr(proc: subprocess.Popen[str]) -> str:
+    if not proc.stderr:
+        return ""
+    try:
+        return proc.stderr.read() or ""
+    except Exception:
+        return ""
 
 
 def run_live_monitor(cfg: RunConfig, tshark: str, db_path: Path, asn_path: Optional[Path] = None) -> int:
@@ -336,10 +364,13 @@ def run_live_monitor(cfg: RunConfig, tshark: str, db_path: Path, asn_path: Optio
             dumpcap_proc = subprocess.Popen(dumpcap_cmd, stderr=subprocess.DEVNULL)
 
     cmd = build_live_tshark_cmd(tshark, cfg, filt, write_pcap=not use_dual and bool(cfg.write_pcap))
+    use_simple_ingest = live_field_set(cfg) == TSHARK_LIVE_FIELDS_SIMPLE
+    use_apt_ui = not use_simple_ingest
+
     print(f"[*] LIVE mode — Ctrl+C untuk stop", file=sys.stderr)
     print(f"[*] tshark: {' '.join(cmd)}", file=sys.stderr)
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
 
     ice_map: dict[str, IceCandidate] = {}
     hits: dict[str, int] = defaultdict(int)
@@ -350,7 +381,6 @@ def run_live_monitor(cfg: RunConfig, tshark: str, db_path: Path, asn_path: Optio
     last_render = 0.0
     last_event = started
     dirty = True
-    use_apt_ui = cfg.filter_preset in ("omegle-ometv",) or cfg.platform
 
     try:
         with geoip2.database.Reader(str(db_path)) as reader:
@@ -361,7 +391,10 @@ def run_live_monitor(cfg: RunConfig, tshark: str, db_path: Path, asn_path: Optio
                     if line:
                         line = line.rstrip("\n")
                         if line.strip():
-                            n = ingest_line(line, ice_map, hits, cfg, new_ips)
+                            if use_simple_ingest:
+                                n = ingest_ip_line(line, hits, cfg, new_ips)
+                            else:
+                                n = ingest_line(line, ice_map, hits, cfg, new_ips)
                             if n:
                                 total_packets += 1
                                 last_event = time.time()
@@ -404,24 +437,42 @@ def run_live_monitor(cfg: RunConfig, tshark: str, db_path: Path, asn_path: Optio
                         dirty = False
                     elif not line:
                         time.sleep(0.05)
+
+                if proc.stdout:
+                    for line in proc.stdout:
+                        line = line.rstrip("\n")
+                        if not line.strip():
+                            continue
+                        if use_simple_ingest:
+                            ingest_ip_line(line, hits, cfg, new_ips)
+                        else:
+                            ingest_line(line, ice_map, hits, cfg, new_ips)
+                        total_packets += 1
+                    for ip in new_ips:
+                        geo_cache[ip] = lookup_geo(reader, ip, hits.get(ip, 0))
             finally:
                 if asn_reader:
                     asn_reader.close()
     except KeyboardInterrupt:
         print("\n[*] Dihentikan operator.", file=sys.stderr)
     finally:
+        tshark_err = ""
         if proc.poll() is None:
             proc.terminate()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        else:
+            tshark_err = _drain_stderr(proc)
         if dumpcap_proc and dumpcap_proc.poll() is None:
             dumpcap_proc.terminate()
             try:
                 dumpcap_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 dumpcap_proc.kill()
+        if tshark_err.strip():
+            print(f"tshark error:\n{tshark_err.strip()[:2000]}", file=sys.stderr)
         if total_packets == 0:
             print(
                 "Tidak ada paket tertangkap. Coba: CMD Run as Administrator, "

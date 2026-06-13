@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
-from chat_geoip.config import IceCandidate
+from chat_geoip.config import TSHARK_LIVE_FIELDS_APT, IceCandidate
 from chat_geoip.utils import is_public_ip
 
 
-def parse_stun_fields(tokens: list[str]) -> list[IceCandidate]:
+def parse_stun_fields(tokens: list[str], field_names: Sequence[str] = TSHARK_LIVE_FIELDS_APT) -> list[IceCandidate]:
     """Parse tshark tab-separated STUN fields into ICE candidates."""
     candidates: list[IceCandidate] = []
-    field_map = _token_map(tokens)
+    field_map = _token_map(tokens, field_names)
 
-    xor_ip = field_map.get("stun.xor-mapped-address.ip", "")
-    xor_port = field_map.get("stun.xor-mapped-address.port", "")
+    xor_ip = (
+        field_map.get("classicstun.att.ipv4-xord", "")
+        or field_map.get("stun.att.ipv4-xord", "")
+    )
+    xor_port = (
+        field_map.get("classicstun.att.port-xord", "")
+        or field_map.get("stun.att.port-xord", "")
+    )
     stun_type = field_map.get("stun.type", "")
 
     src_ip = field_map.get("ip.src", "")
@@ -43,23 +49,12 @@ def parse_stun_fields(tokens: list[str]) -> list[IceCandidate]:
     return candidates
 
 
-def _token_map(tokens: list[str]) -> dict[str, str]:
-    """Map positional tokens to field names based on known order from passive capture."""
-    names = [
-        "ip.src",
-        "ip.dst",
-        "udp.srcport",
-        "udp.dstport",
-        "stun.type",
-        "stun.xor-mapped-address.ip",
-        "stun.xor-mapped-address.port",
-        "rtp.ssrc",
-        "tls.handshake.extensions_server_name",
-    ]
+def _token_map(tokens: list[str], field_names: Sequence[str]) -> dict[str, str]:
+    """Map positional tokens to field names based on tshark -e order."""
     result: dict[str, str] = {}
     for i, token in enumerate(tokens):
-        if i < len(names) and token and token != "<no value>":
-            result[names[i]] = token.strip()
+        if i < len(field_names) and token and token != "<no value>":
+            result[field_names[i]] = token.strip()
     return result
 
 

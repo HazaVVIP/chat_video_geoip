@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Optional, Sequence
 
-from chat_geoip.config import IceCandidate
+from chat_geoip.config import TSHARK_LIVE_FIELDS_APT, IceCandidate
 from chat_geoip.utils import is_public_ip
 
 CANDIDATE_LINE = re.compile(
@@ -42,7 +42,11 @@ def parse_browser_candidate(candidate_str: str) -> Optional[IceCandidate]:
     )
 
 
-def parse_passive_line(tokens: list[str], include_private: bool = False) -> list[IceCandidate]:
+def parse_passive_line(
+    tokens: list[str],
+    include_private: bool = False,
+    field_names: Sequence[str] = TSHARK_LIVE_FIELDS_APT,
+) -> list[IceCandidate]:
     """Parse a tshark output line into ICE candidates."""
     from chat_geoip.parse.stun import parse_stun_fields
 
@@ -73,7 +77,7 @@ def parse_passive_line(tokens: list[str], include_private: bool = False) -> list
                     )
                 )
 
-    candidates.extend(parse_stun_fields(tokens))
+    candidates.extend(parse_stun_fields(tokens, field_names))
     return _dedupe_candidates(candidates)
 
 

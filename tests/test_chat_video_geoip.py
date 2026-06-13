@@ -46,6 +46,41 @@ class TestCdnClassifier:
         assert classify_cdn("103.169.238.160") == ""
 
 
+class TestStunXorMapped:
+    def test_stun_xor_mapped(self):
+        # classicstun.att.ipv4-xord is field index 5 in APT field set
+        tokens = ["", "", "", "", "", "103.169.238.160", "12345"]
+        cands = parse_stun_fields(tokens)
+        assert any(c.ip == "103.169.238.160" and c.typ == "srflx" for c in cands)
+
+
+class TestLiveFields:
+    def test_all_preset_uses_simple_fields(self):
+        from chat_geoip.capture.passive import live_field_set
+        from chat_geoip.config import RunConfig, TSHARK_LIVE_FIELDS_SIMPLE
+
+        cfg = RunConfig(filter_preset="all", live=True)
+        assert live_field_set(cfg) == TSHARK_LIVE_FIELDS_SIMPLE
+
+    def test_apt_fields_are_valid_for_tshark(self):
+        import shutil
+        import subprocess
+
+        from chat_geoip.config import TSHARK_LIVE_FIELDS_APT, TSHARK_LIVE_FIELDS_SIMPLE
+
+        tshark = shutil.which("tshark")
+        if not tshark:
+            pytest.skip("tshark not installed")
+
+        for fields in (TSHARK_LIVE_FIELDS_SIMPLE, TSHARK_LIVE_FIELDS_APT):
+            cmd = [tshark, "-n", "-i", "lo", "-c", "1", "-T", "fields"]
+            for field in fields:
+                cmd += ["-e", field]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            err = (proc.stderr or "").lower()
+            assert "aren't valid" not in err, proc.stderr
+
+
 class TestIceParsing:
     def test_browser_candidate_srflx(self):
         cand = "candidate:1 1 udp 2130706431 82.64.1.2 54321 typ srflx"
@@ -54,11 +89,6 @@ class TestIceParsing:
         assert result.ip == "82.64.1.2"
         assert result.typ == "srflx"
         assert result.source == "browser_hook"
-
-    def test_stun_xor_mapped(self):
-        tokens = ["", "", "", "", "", "103.169.238.160", "12345"]
-        cands = parse_stun_fields(tokens)
-        assert any(c.ip == "103.169.238.160" and c.typ == "srflx" for c in cands)
 
     def test_passive_line_ips(self):
         tokens = ["103.169.238.160", "8.8.8.8"]
