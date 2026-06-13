@@ -68,14 +68,25 @@ if !errorlevel! neq 0 goto pip_fail
 if !errorlevel! neq 0 goto pip_fail
 
 echo.
+echo [*] Install Playwright Chromium (hybrid mode)...
+!PY! -m playwright install chromium
+if !errorlevel! neq 0 (
+    echo [!] Playwright install gagal — hybrid mode tidak tersedia
+)
+
+echo.
 echo [OK] Dependensi terpasang.
 echo.
 call :check_tshark
 echo.
+echo [*] Self-check...
+call "%~dp0run.bat" --check
+echo.
 echo Selanjutnya:
-echo   set GEOLITE2_CITY_DB=C:\GeoIP\GeoLite2-City.mmdb
+echo   run.bat --version
 echo   run.bat --ip 8.8.8.8
-echo   run.bat -r C:\path\capture.pcap
+echo   run.bat omegle
+echo   run.bat --hybrid --auto-interface --platform ometv
 echo.
 pause
 exit /b 0
